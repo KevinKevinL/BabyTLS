@@ -11,7 +11,7 @@ public class BabyTLSClient {
     private static final String HOST = "localhost";
     private static final int PORT = 8889;
     // 使用一个适中的素数，足够展示安全特性但又可以在合理时间内破解
-    private static final BigInteger p = new BigInteger("137", 10);  // 32位素数
+    private static final BigInteger p = new BigInteger("137", 10);
     private static final BigInteger g = BigInteger.valueOf(5);
 
     private Socket socket;
