@@ -1,16 +1,17 @@
 import java.io.*;
 import java.net.*;
 import java.security.*;
+import java.security.spec.*;
 import javax.crypto.*;
 import javax.crypto.spec.*;
-import java.util.Base64;
+import java.util.*;
 import java.math.BigInteger;
 
 public class BabyTLSCracker {
     private static final String HOST = "localhost";
     private static final int SERVER_PORT = 8888;
     private static final int PROXY_PORT = 8889;
-    private static final BigInteger p = BigInteger.valueOf(23);
+    private static final BigInteger p = new BigInteger("137", 10);
     private static final BigInteger g = BigInteger.valueOf(5);
 
     public static void main(String[] args) {
@@ -26,91 +27,108 @@ public class BabyTLSCracker {
                     BufferedReader serverIn = new BufferedReader(new InputStreamReader(serverSocket.getInputStream()));
                     PrintWriter serverOut = new PrintWriter(serverSocket.getOutputStream(), true)
                 ) {
+                    System.out.println("\nNew connection established");
                     System.out.println("Client connected to proxy");
                     System.out.println("Proxy connected to server");
 
-                    // Relay client's public key to server
-                    System.out.println("Waiting for client public key...");
-                    String clientPublicKeyStr = clientIn.readLine();
-                    System.out.println("Received client public key: " + clientPublicKeyStr);
-                    System.out.println("Forwarding client public key to server...");
-                    serverOut.println(clientPublicKeyStr);
-                    BigInteger clientPublicKey = new BigInteger(clientPublicKeyStr);
+                    // 转发和截获密钥交换过程
+                    String clientKeyMsg = clientIn.readLine();
+                    String[] clientKeys = clientKeyMsg.split(":");
+                    serverOut.println(clientKeyMsg);
+                    String clientDHPublicKeyStr = clientKeys[1];
+                    BigInteger clientDHPublicKey = new BigInteger(clientDHPublicKeyStr);
 
-                    // Relay server's public key to client
-                    System.out.println("Waiting for server public key...");
-                    String serverPublicKeyStr = serverIn.readLine();
-                    System.out.println("Received server public key: " + serverPublicKeyStr);
-                    System.out.println("Forwarding server public key to client...");
-                    clientOut.println(serverPublicKeyStr);
-                    BigInteger serverPublicKey = new BigInteger(serverPublicKeyStr);
+                    String serverKeyMsg = serverIn.readLine();
+                    String[] serverKeys = serverKeyMsg.split(":");
+                    clientOut.println(serverKeyMsg);
+                    String serverDHPublicKeyStr = serverKeys[1];
+                    BigInteger serverDHPublicKey = new BigInteger(serverDHPublicKeyStr);
 
-                    System.out.println("Intercepted public keys:");
-                    System.out.println("Client: " + clientPublicKey);
-                    System.out.println("Server: " + serverPublicKey);
+                    System.out.println("\nIntercepted DH public keys:");
+                    System.out.println("Client: " + clientDHPublicKey);
+                    System.out.println("Server: " + serverDHPublicKey);
 
-                    // Crack private keys
-                    System.out.println("Starting to crack private keys...");
+                    // 使用优化的方法破解私钥
+                    System.out.println("\nStarting to crack private keys...");
                     long startTime = System.currentTimeMillis();
 
-                    BigInteger clientPrivateKey = crackPrivateKey(clientPublicKey);
-                    BigInteger serverPrivateKey = crackPrivateKey(serverPublicKey);
+                    System.out.println("Cracking client private key...");
+                    BigInteger clientPrivateKey = crackDHPrivateKey(clientDHPublicKey);
+                    System.out.println("Successfully cracked client private key: " + clientPrivateKey);
+
+                    System.out.println("Cracking server private key...");
+                    BigInteger serverPrivateKey = crackDHPrivateKey(serverDHPublicKey);
+                    System.out.println("Successfully cracked server private key: " + serverPrivateKey);
 
                     long endTime = System.currentTimeMillis();
-
-                    System.out.println("Cracked private keys:");
-                    System.out.println("Client: " + clientPrivateKey);
-                    System.out.println("Server: " + serverPrivateKey);
                     System.out.println("Time taken to crack: " + (endTime - startTime) + " ms");
 
-                    // Derive session key
-                    BigInteger sharedSecret = serverPublicKey.modPow(clientPrivateKey, p);
+                    // 计算共享密钥
+                    BigInteger sharedSecret = serverDHPublicKey.modPow(clientPrivateKey, p);
+                    System.out.println("Computed shared secret: " + sharedSecret);
                     byte[] keyBytes = deriveKey(sharedSecret.toByteArray());
                     SecretKeySpec sessionKey = new SecretKeySpec(keyBytes, "AES");
 
-                    // Relay and intercept messages
+                    // 转发和解密消息
                     String message;
                     while ((message = clientIn.readLine()) != null) {
-                        System.out.println("Intercepted encrypted message from client: " + message);
-                        String decryptedMessage = decrypt(message, sessionKey);
-                        System.out.println("Decrypted message: " + decryptedMessage);
-
-                        System.out.println("Forwarding encrypted message to server...");
+                        System.out.println("\nIntercepted client message: " + message);
                         serverOut.println(message);
+                        
+                        String[] messageParts = message.split(":");
+                        if (messageParts.length >= 1) {
+                            try {
+                                String decryptedMessage = decrypt(messageParts[0], sessionKey);
+                                System.out.println("Decrypted message: " + decryptedMessage);
+                            } catch (Exception e) {
+                                System.out.println("Failed to decrypt message: " + e.getMessage());
+                            }
+                        }
 
-                        String serverResponse = serverIn.readLine();
-                        if (serverResponse != null) {
-                            System.out.println("Intercepted encrypted response from server: " + serverResponse);
-                            String decryptedResponse = decrypt(serverResponse, sessionKey);
-                            System.out.println("Decrypted response: " + decryptedResponse);
-
-                            System.out.println("Forwarding encrypted response to client...");
-                            clientOut.println(serverResponse);
-                        } else {
-                            System.out.println("Server closed the connection.");
-                            break;
+                        String response = serverIn.readLine();
+                        if (response != null) {
+                            System.out.println("Intercepted server response: " + response);
+                            String[] responseParts = response.split(":");
+                            if (responseParts.length >= 1) {
+                                try {
+                                    String decryptedResponse = decrypt(responseParts[0], sessionKey);
+                                    System.out.println("Decrypted response: " + decryptedResponse);
+                                } catch (Exception e) {
+                                    System.out.println("Failed to decrypt response: " + e.getMessage());
+                                }
+                            }
+                            clientOut.println(response);
                         }
                     }
-
-                    System.out.println("Client closed the connection.");
                 } catch (Exception e) {
-                    System.out.println("Error occurred during communication: " + e.getMessage());
+                    System.out.println("Error in connection: " + e.getMessage());
                     e.printStackTrace();
                 }
             }
         } catch (IOException e) {
-            System.out.println("Could not listen on port " + PROXY_PORT);
             e.printStackTrace();
         }
     }
 
-    private static BigInteger crackPrivateKey(BigInteger publicKey) {
+    private static BigInteger crackDHPrivateKey(BigInteger publicKey) {
         System.out.println("Cracking private key for public key: " + publicKey);
-        for (BigInteger i = BigInteger.ONE; i.compareTo(p) < 0; i = i.add(BigInteger.ONE)) {
-            if (g.modPow(i, p).equals(publicKey)) {
-                return i;
+        
+        // 对于小的素数p，直接使用暴力搜索更可靠
+        BigInteger maxExponent = p;
+        BigInteger attempt = BigInteger.ZERO;
+        
+        while (attempt.compareTo(maxExponent) < 0) {
+            if (g.modPow(attempt, p).equals(publicKey)) {
+                return attempt;
+            }
+            attempt = attempt.add(BigInteger.ONE);
+            
+            // 每1000次尝试显示一个进度标记
+            if (attempt.mod(BigInteger.valueOf(1000)).equals(BigInteger.ZERO)) {
+                System.out.print(".");
             }
         }
+        
         throw new RuntimeException("Failed to crack private key");
     }
 
